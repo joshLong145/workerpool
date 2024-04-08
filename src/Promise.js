@@ -197,6 +197,20 @@ Promise.prototype['catch'] = function (onFail) {
   return this.then(null, onFail);
 };
 
+/**
+  * Execute given callback when the promise either resolves or rejects.
+  * Same semantics as Node's Promise.finally()
+  * @param {Function} fn
+  * @returns {Promise} promise
+  */
+Promise.prototype.finally = function (fn) {
+  const onFinally = callback => Promise.resolve(fn()).then(callback);
+  return this.then(
+    result => onFinally(() => result),
+    reason => onFinally(() => Promise.reject(reason))
+  );
+}
+
 // TODO: add support for Promise.catch(Error, callback)
 // TODO: add support for Promise.catch(Error, Error, callback)
 
