@@ -1,73 +1,41 @@
 const workerpool = require("..");
 
-// create a worker pool
-const pool = workerpool.pool(__dirname + "/workers/cleanupAbort.js", {
-  // maximum time to wait for worker to cleanup it's resources
-  // on termination before forcefully stopping the worker
-  workerTerminateTimeout: 1000,
-  onCreateWorker: function (args) {
-    console.log("New worker created");
-  },
-  onTerminateWorker: function () {
-    console.log("worker terminated");
-  },
-  maxWorkers: 1,
-});
+function add(a, b) {
+  return a + b;
+}
 
-const main = async function() {
-  let abortResolverSuccess;
-  await pool
-    .exec("asyncTimeout", [], {
-        onAbortResolution: function (args) {
-          console.log("abort operation concluded for task:", args.id);
-          console.log("is worker terminating", args.isTerminating);
-        },
-        onAbortStart: async function (args) {
-          console.log(
-            "abort operation started from task timeout, in onAbortStart",
-          );
-          abortResolverSuccess = args.abortPromise;
-      },
-    })
-    .timeout(100)
-    .catch((err) => {
-      console.log("timeout handled: ", err.message);
-    });
+function main() {
+  const pool = workerpool.pool(__dirname + "/workers/cleanupAbort.js", {
+    // maximum time to wait for worker to cleanup it's resources
+    // on termination before forcefully stopping the worker
 
-  await abortResolverSuccess.then((err) => {
-    console.log("abort operation resolved for asyncTimeout");
+    onCreateWorker: function (args) {
+      console.log("New worker created");
+    },
+    onTerminateWorker: function () {
+      console.log("worker terminated");
+    },
+    maxWorkers: 1,
   });
 
-  console.log("pool status after abort operation:", pool.stats());
+  console.log("Starting first task that will timeout after 100ms...");
 
-  let abortResolverFailure;
-  await pool
-    .exec("asyncAbortHandlerNeverResolves", [], {
-      onAbortStart: function (args) {
-        console.log(
-          "abort operation started from task cancel, in onAbortStart",
-        );
-        abortResolverFailure = args.abortPromise;
-      },
-      onAbortResolution: function (args) {
-        console.log("abort operation concluded for task:", args.id);
-        console.log("is worker terminating", args.isTerminating);
-        console.log("no min workers are set, no new worker should be created");
-      }
-    })
-    .cancel()
-    .catch((err) => {
-      console.log("task canceled");
-      console.log("cancel occured: ", err.message);
+  // First task demonstrates our improved timeout handling
+  const task = pool
+    .exec(add)
+    .then((res) => {
+      console.log("Timeout occurred:", res);
+      console.log("The promise chain continues even after timeout");
+      console.log("Worker cleanup is happening in the background");
+    }).catch(() =>{
+      console.log("sdasd")
     });
 
 
-  await abortResolverFailure.then(() => {
-    console.log("cancelation handled for asyncAbortHandlerNeverResolves");
-  });
+  pool.workers[0].worker.kill();
 
-  console.log("final pool stats", pool.stats());
-  // we dont need to terminate the pool, since all workers should be terminated by this point even though there is a handler.
+
+  return task;
 };
 
 main();

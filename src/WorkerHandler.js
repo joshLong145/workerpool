@@ -223,7 +223,7 @@ function handleEmittedStdPayload(handler, payload) {
   Object.values(handler.processing)
     .forEach(task => task?.options?.on(payload));
 
-  Object.values(handler.tracking)
+  !handler.processing && Object.values(handler.tracking)
     .forEach(task => task?.options?.on(payload));
 }
 
@@ -277,6 +277,7 @@ function WorkerHandler(script, _options) {
       if (task !== undefined) {
         if (response.isEvent) {
           if (task.options && typeof task.options.on === 'function') {
+
             task.options.on(response.payload);
           }
         } else {
@@ -294,6 +295,7 @@ function WorkerHandler(script, _options) {
             task.resolver.reject(objectToError(response.error));
           }
           else {
+            delete me.tracking[id];
             task.resolver.resolve(response.result);
           }
         }
@@ -319,10 +321,6 @@ function WorkerHandler(script, _options) {
           } else {
             me.tracking && clearTimeout(trackedTask.timeoutId);
             trackedTask.resolver.resolve(trackedTask.result);
-            trackedTask && trackedTask.options.onAbortResolution && trackedTask.options.onAbortResolution({
-              id,
-              isTerminating: false,
-            })
           }
         }
       }
@@ -340,6 +338,14 @@ function WorkerHandler(script, _options) {
     }
 
     me.processing = Object.create(null);
+
+    // If we are terminating, cancel all tracked task for cleanup
+    for (var task of Object.values(me.tracking)) {
+      clearTimeout(task.timeoutId);
+      //task.resolver.reject(error);
+    }
+
+    me.tracking = Object.create(null);
   }
 
   // send all queued requests to worker
@@ -365,6 +371,7 @@ function WorkerHandler(script, _options) {
 
     message += '    stdout: `' + worker.stdout + '`\n'
     message += '    stderr: `' + worker.stderr + '`\n'
+
 
     onError(new Error(message));
   });
@@ -409,6 +416,13 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
     options: options
   };
 
+  const abortResolver = Promise.defer();
+  this.tracking[id] = {
+    id,
+    resolver: abortResolver,
+    options: options,
+  };
+
   // build a JSON-RPC request
   var request = {
     message: {
@@ -430,66 +444,45 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
 
   // on cancellation, force the worker to terminate
   var me = this;
-  return resolver.promise.catch(function (error) {
+
+  // set up the 'tracking' promise to monitor the abort phase of the task
+  // the catch is implemented to handle cleanup operations in the event the worker
+  // needs to be terminated.
+  this.tracking[id].resolver.promise = this.tracking[id].resolver.promise.catch(function(err) {
+    delete me.tracking[id];
+    var promise = me.terminateAndNotify(true)
+      .then(function() {
+        if (terminationHandler) {
+          return terminationHandler().then(function() {
+            throw err;
+          });
+        } else {
+          throw err;
+        }
+      }, function(err) {
+        if (terminationHandler) {
+          return terminationHandler().then(function() {
+            throw err;
+          });
+        } else {
+          throw err;
+        }
+    });
+
+    return promise;
+  });
+
+
+  resolver.promise = resolver.promise.catch(function (error) {
     if (error instanceof Promise.CancellationError || error instanceof Promise.TimeoutError) {
-
-      const abortResolver = options && options.abortResolver
-        ? options.abortResolver
-        : Promise.defer();
-
-      me.tracking[id] = {
-        id,
-        resolver: abortResolver,
-        options: options,
-      };
-
       // remove this task from the queue. It is already rejected (hence this
       // catch event), and else it will be rejected again when terminating
       delete me.processing[id];
-
-      // set up the 'tracking' promise to monitor the abort phase of the task
-      // the catch is implemented to handle cleanup operations in the event the worker
-      // needs to be terminated.
-      me.tracking[id].resolver.promise = me.tracking[id].resolver.promise.catch(function(err) {
-        delete me.tracking[id];
-        var promise = me.terminateAndNotify(true)
-          .then(function() {
-            options && options.onAbortResolution && options.onAbortResolution({
-              error: err,
-              id,
-              isTerminating: true
-              });
-            if (terminationHandler) {
-              return terminationHandler();
-            } else {
-              throw err;
-            }
-          }, function(err) {
-            options && options.onAbortResolution && options.onAbortResolution({
-              error: err,
-              id,
-              isTerminating: true
-            });
-            if (terminationHandler) {
-              return terminationHandler();
-            } else {
-              throw err;
-            }
-          });
-
-        return promise;
-      });
 
       // send a message to the worker which starts the abort operation on the worker
       me.worker.send({
         id,
         method: CLEANUP_METHOD_ID
-      });
-
-      // notify through callback the abort operation is starting
-      options && options.onAbortStart && options.onAbortStart({
-        id,
-        abortPromise: me.tracking[id].resolver.promise,
       });
 
       /**
@@ -509,18 +502,25 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
       */
       me.tracking[id].timeoutId = setTimeout(function() {
         me.tracking[id].resolver.reject(error);
-      }, me.workerTerminateTimeout + 5);
+      }, me.workerTerminateTimeout + 100);
 
-      // return the tracking promise
       return me.tracking[id].resolver.promise;
     } else {
       if (terminationHandler) {
-        return terminationHandler();
+        return terminationHandler().then(function() {
+          throw error;
+        },
+        function() {
+          throw err;
+        });
       } else {
         throw error;
       }
     }
-  })
+  });
+
+  this.processing[id].resolver = resolver;
+  return resolver.promise;
 };
 
 /**
@@ -541,8 +541,10 @@ WorkerHandler.prototype.busy = function () {
  */
 WorkerHandler.prototype.terminate = function (force, callback) {
   var me = this;
+
   if (force) {
     // cancel all tasks in progress
+
     for (var id in this.processing) {
       if (this.processing[id] !== undefined) {
         this.processing[id].resolver.reject(new Error('Worker terminated'));
@@ -550,19 +552,21 @@ WorkerHandler.prototype.terminate = function (force, callback) {
     }
 
     this.processing = Object.create(null);
-  }
 
-  // If we are terminating, cancel all tracked task for cleanup
-  for (var task of Object.values(me.tracking)) {
-    clearTimeout(task.timeoutId);
-    task.resolver.reject(new Error('Worker Terminating'));
-  }
+    // If we are terminating, cancel all tracked task for cleanup
+    for (var task of Object.values(me.tracking)) {
+      clearTimeout(task.timeoutId);
+      task.resolver.reject(new Error('Worker Terminating'));
+    }
 
-  me.tracking = Object.create(null);
+    me.tracking = Object.create(null);
+  }
 
   if (typeof callback === 'function') {
     this.terminationHandler = callback;
   }
+
+
   if (!this.busy()) {
     // all tasks are finished. kill the worker
     var cleanup = function(err) {

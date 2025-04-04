@@ -234,6 +234,8 @@ Pool.prototype._next = function () {
         if (worker.terminated) {
           return me._removeWorker(worker);
         }
+
+        return new Promise(function(res) {res();});
       }
       // check if the task is still pending (and not cancelled -> promise rejected)
       if (task.resolver.promise.pending) {
@@ -301,6 +303,7 @@ Pool.prototype._removeWorker = function(worker) {
   this._removeWorkerFromList(worker);
   // If minWorkers set, spin up new workers to replace the crashed ones
   this._ensureMinWorkers();
+
   // terminate the worker (if not already terminated)
   return new Promise(function(resolve, reject) {
     worker.terminate(false, function(err) {
@@ -430,7 +433,6 @@ Pool.prototype._createWorkerHandler = function () {
     workerType: this.workerType,
     workerTerminateTimeout: this.workerTerminateTimeout,
     emitStdStreams: this.emitStdStreams,
-    onAbortResolution: this.onAbortResolution
   });
 }
 
