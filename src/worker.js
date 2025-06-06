@@ -6,7 +6,7 @@
 var Transfer = require('./transfer');
 
 /**
- * worker must handle async cleanup handlers. Use custom Promise implementation. 
+ * worker must handle async cleanup handlers. Use custom Promise implementation.
 */
 var Promise = require('./Promise').Promise;
 /**
@@ -156,7 +156,7 @@ worker.abortListeners = [];
 
 /**
  * Cleanup and exit the worker.
- * @param {Number} code 
+ * @param {Number} code
  * @returns {Promise<void>}
  */
 worker.terminateAndExit = function(code) {
@@ -167,7 +167,7 @@ worker.terminateAndExit = function(code) {
   if(!worker.terminationHandler) {
     return _exit();
   }
-  
+
   var result = worker.terminationHandler(code);
   if (isPromise(result)) {
     result.then(_exit, _exit);
@@ -189,7 +189,6 @@ worker.terminateAndExit = function(code) {
   * @return {Promise<void>}
 */
 worker.cleanup = function(requestId) {
-
   if (!worker.abortListeners.length) {
     worker.send({
       id: requestId,
@@ -201,7 +200,7 @@ worker.cleanup = function(requestId) {
     // that cleanup should begin and the handler should be GCed.
     return new Promise(function(resolve) { resolve(); });
   }
-  
+
 
   var _exit = function() {
     worker.exit();
@@ -216,12 +215,12 @@ worker.cleanup = function(requestId) {
   const promises = worker.abortListeners.map(listener => listener());
   let timerId;
   const timeoutPromise = new Promise((_resolve, reject) => {
-    timerId = setTimeout(function () { 
+    timerId = setTimeout(function () {
       reject(new Error('Timeout occured waiting for abort handler, killing worker'));
     }, worker.abortListenerTimeout);
   });
 
-  // Once a promise settles we need to clear the timeout to prevet fulfulling the promise twice 
+  // Once a promise settles we need to clear the timeout to prevet fulfulling the promise twice
   const settlePromise = Promise.all(promises).then(function() {
     clearTimeout(timerId);
     _abort();
@@ -235,7 +234,7 @@ worker.cleanup = function(requestId) {
   // - Reject if one or more handlers exceed the 'abortListenerTimeout' interval
   // - Reject if one or more handlers reject
   // Upon one of the above cases a message will be sent to the handler with the result of the handler execution
-  // which will either kill the worker if the result contains an error, or 
+  // which will either kill the worker if the result contains an error, or
   return new Promise(function (resolve, reject) {
     settlePromise.then(resolve, reject);
     timeoutPromise.then(resolve, reject);
@@ -270,7 +269,7 @@ worker.on('message', function (request) {
 
     if (method) {
       currentRequestId = request.id;
-      
+
       // execute the function
       var result = method.apply(method, request.params);
 

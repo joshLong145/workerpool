@@ -144,6 +144,9 @@ Pool.prototype.exec = function (method, params, options) {
     };
     tasks.push(task);
 
+    // trigger task execution
+    var promise = this._next();
+
     // replace the timeout method of the Promise with our own,
     // which starts the timer as soon as the task is actually started
     var originalTimeout = resolver.promise.timeout;
@@ -158,11 +161,7 @@ Pool.prototype.exec = function (method, params, options) {
         return originalTimeout.call(resolver.promise, delay);
       }
     };
-
-    // trigger task execution
-    this._next();
-
-    return resolver.promise;
+    return promise ? promise : resolver.promise;
   }
   else if (typeof method === 'function') {
     // send stringified function and function arguments to worker
@@ -239,15 +238,23 @@ Pool.prototype._next = function () {
       if (task.resolver.promise.pending) {
         // send the request to the worker
         var promise = worker.exec(task.method, task.params, task.resolver, task.options, terminationHandler)
-          .then(me._boundNext)
-          .then(function() {
+          .then(function (result) {
+            me._boundNext();
+            return result;
+          })
+          .then(function(result) {
             me._next(); // trigger next task in the queue
+            return result;
+          }).catch(function(err) {
+            throw err;
           });
 
         // start queued timer now
         if (typeof task.timeout === 'number') {
           promise.timeout(task.timeout);
         }
+
+        return promise;
       } else {
         // The task taken was already complete (either rejected or resolved), so just trigger next task in the queue
         me._next();
@@ -310,6 +317,7 @@ Pool.prototype._removeWorker = function(worker) {
         workerThreadOpts: worker.workerThreadOpts,
         script: worker.script
       });
+
       if (err) {
         reject(err);
       } else {

@@ -1,5 +1,6 @@
 'use strict';
 
+const { clearTimeout } = require('timers');
 var {Promise} = require('./Promise');
 var environment = require('./environment');
 const {validateOptions, forkOptsNames, workerThreadOptsNames, workerOptsNames} = require("./validateOptions");
@@ -298,7 +299,7 @@ function WorkerHandler(script, _options) {
           }
         }
       } else {
-        // if the task is not the current, it might be tracked for cleanup
+        // if the task is not the current, it might be tracked for cleanupw
         var task = me.tracking[id];
         if (task !== undefined) {
           if (response.isEvent) {
@@ -318,11 +319,8 @@ function WorkerHandler(script, _options) {
             trackedTask.resolver.reject(objectToError(response.error));
           } else {
             me.tracking && clearTimeout(trackedTask.timeoutId);
-            trackedTask.resolver.resolve(trackedTask.result);
-            trackedTask && trackedTask.options.onAbortResolution && trackedTask.options.onAbortResolution({
-              id,
-              isTerminating: false,
-            })
+            trackedTask.completed = true;
+            trackedTask.resolver.reject(new WrappedTimeoutError(trackedTask.error));
           }
         }
       }
@@ -432,15 +430,12 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
   var me = this;
   return resolver.promise.catch(function (error) {
     if (error instanceof Promise.CancellationError || error instanceof Promise.TimeoutError) {
-
-      const abortResolver = options && options.abortResolver
-        ? options.abortResolver
-        : Promise.defer();
-
+      var abortResolver = Promise.defer();
       me.tracking[id] = {
         id,
         resolver: abortResolver,
         options: options,
+        error,
       };
 
       // remove this task from the queue. It is already rejected (hence this
@@ -451,27 +446,28 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
       // the catch is implemented to handle cleanup operations in the event the worker
       // needs to be terminated.
       me.tracking[id].resolver.promise = me.tracking[id].resolver.promise.catch(function(err) {
-        delete me.tracking[id];
+        if (err instanceof WrappedTimeoutError) {
+          throw err.error;
+        }
+
         var promise = me.terminateAndNotify(true)
           .then(function() {
-            options && options.onAbortResolution && options.onAbortResolution({
-              error: err,
-              id,
-              isTerminating: true
-              });
             if (terminationHandler) {
-              return terminationHandler();
+              return new Promise(function(_, rej) {
+                return terminationHandler().then(function() {
+                  rej(error);
+                });
+              });
             } else {
               throw err;
             }
           }, function(err) {
-            options && options.onAbortResolution && options.onAbortResolution({
-              error: err,
-              id,
-              isTerminating: true
-            });
             if (terminationHandler) {
-              return terminationHandler();
+              return new Promise(function(_, rej) {
+                return terminationHandler().then(function() {
+                  rej(error);
+                });
+              });
             } else {
               throw err;
             }
@@ -484,12 +480,6 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
       me.worker.send({
         id,
         method: CLEANUP_METHOD_ID
-      });
-
-      // notify through callback the abort operation is starting
-      options && options.onAbortStart && options.onAbortStart({
-        id,
-        abortPromise: me.tracking[id].resolver.promise,
       });
 
       /**
@@ -514,13 +504,36 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
       // return the tracking promise
       return me.tracking[id].resolver.promise;
     } else {
-      if (terminationHandler) {
-        return terminationHandler();
-      } else {
+      if(error.message.includes("Workerpool Worker terminated")
+        || me.terminating
+        || error.message.includes('Worker terminated')
+      ) {
+        delete me.processing[id];
+        me.terminated = true;
+        me.cleaning = false;
+
+        if (me.worker != null && me.worker.removeAllListeners) {
+          // removeAllListeners is only available for child_process
+          me.worker.removeAllListeners('message');
+        }
+        me.worker && me.worker.kill();
+        me.worker = null;
+        me.terminating = false;
+        if (terminationHandler) {
+          return new Promise(function(_, rej) {
+            return terminationHandler().then(function() {
+              rej(error);
+            });
+          });
+        }
         throw error;
+      } else {
+        return me.terminateAndNotify(true).then(function(){
+          throw error;
+        });
       }
     }
-  })
+  });
 };
 
 /**
@@ -590,6 +603,7 @@ WorkerHandler.prototype.terminate = function (force, callback) {
         }
 
         // child process and worker threads
+        var me = this;
         var cleanExitTimeout = setTimeout(function() {
           if (me.worker) {
             me.worker.kill();
@@ -655,6 +669,12 @@ WorkerHandler.prototype.terminateAndNotify = function (force, timeout) {
   });
   return resolver.promise;
 };
+
+function WrappedTimeoutError(timeoutError) {
+  this.error = timeoutError;
+  this.stack = (new Error()).stack;
+}
+
 
 module.exports = WorkerHandler;
 module.exports._tryRequireWorkerThreads = tryRequireWorkerThreads;
