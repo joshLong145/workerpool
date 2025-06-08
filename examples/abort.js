@@ -45,6 +45,8 @@ const main = async function() {
     console.trace(res);
   });
   // we dont need to terminate the pool, since all workers should be terminated by this point even though there is a handler.
+
+  return pool.terminate();
 };
 
 main();

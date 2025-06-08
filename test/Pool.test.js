@@ -1,7 +1,6 @@
 var assert = require('assert');
 var {Promise} = require('../src/Promise');
 var Pool = require('../src/Pool');
-const setTimeout = require('core-js/fn/set-timeout');
 var tryRequire = require('./utils').tryRequire
 
 function add(a, b) {

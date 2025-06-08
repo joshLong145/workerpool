@@ -504,6 +504,12 @@ WorkerHandler.prototype.exec = function(method, params, resolver, options, termi
       // return the tracking promise
       return me.tracking[id].resolver.promise;
     } else {
+      /**
+      * Hacky way of checking the error context for work termination
+      * we need to check for these error types as we have already started
+      * worker termination, for which we do not want to start the
+      * termination process over. Where we instead just run the cleanup
+       */
       if(error.message.includes("Workerpool Worker terminated")
         || me.terminating
         || error.message.includes('Worker terminated')
@@ -670,6 +676,12 @@ WorkerHandler.prototype.terminateAndNotify = function (force, timeout) {
   return resolver.promise;
 };
 
+
+/**
+* Wrapper error type to denote that a TimeoutError has already been proceesed
+* and we should skip cleanup operations
+* @param {Promise.TimeoutError} timeoutError
+*/
 function WrappedTimeoutError(timeoutError) {
   this.error = timeoutError;
   this.stack = (new Error()).stack;
