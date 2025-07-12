@@ -275,6 +275,18 @@ Promise.defer = function () {
     resolver.reject = reject;
   });
 
+  resolver.chainDefer = function() {
+    var newResolver = {};
+
+    // Create the new independent promise
+    const promise = new ChainablePromise(function(resolve, reject) {
+      newResolver.resolve = resolve;
+      newResolver.reject = reject;
+    }, newResolver.promise);
+
+    return newResolver;
+  };
+
   return resolver;
 };
 
